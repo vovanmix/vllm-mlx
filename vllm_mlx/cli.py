@@ -49,9 +49,13 @@ def serve_command(args):
     if args.enable_auto_tool_choice and args.tool_call_parser:
         server._enable_auto_tool_choice = True
         server._tool_call_parser = args.tool_call_parser
+        server._enable_tool_logits_bias = getattr(
+            args, "enable_tool_logits_bias", False
+        )
     else:
         server._enable_auto_tool_choice = False
         server._tool_call_parser = None
+        server._enable_tool_logits_bias = False
 
     # Configure generation defaults
     if args.default_temperature is not None:
@@ -96,7 +100,8 @@ def serve_command(args):
         print("  Rate limiting: DISABLED - Use --rate-limit to enable")
     print(f"  Request timeout: {args.timeout}s")
     if args.enable_auto_tool_choice:
-        print(f"  Tool calling: ENABLED (parser: {args.tool_call_parser})")
+        bias_info = " + logits bias" if getattr(args, "enable_tool_logits_bias", False) else ""
+        print(f"  Tool calling: ENABLED (parser: {args.tool_call_parser}{bias_info})")
     else:
         print("  Tool calling: Use --enable-auto-tool-choice to enable")
     if args.reasoning_parser:
@@ -779,6 +784,7 @@ Examples:
             "functionary",
             "glm47",
             "harmony",
+            "minimax",
         ],
         help=(
             "Select the tool call parser for the model. Options: "
@@ -786,6 +792,27 @@ Examples:
             "deepseek, kimi, granite, nemotron, xlam, functionary, glm47, minimax, harmony. "
             "Required for --enable-auto-tool-choice."
         ),
+    )
+    # Tool logits bias (jump-forward decoding for tool call structural tokens)
+    serve_parser.add_argument(
+        "--enable-tool-logits-bias",
+        action="store_true",
+        default=False,
+        help="Bias logits toward structural tool call tokens for faster generation. "
+        "Only active when --tool-call-parser is also set. Currently supports minimax.",
+    )
+    # Speculative decoding options
+    serve_parser.add_argument(
+        "--draft-model",
+        type=str,
+        default=None,
+        help="Draft model for speculative decoding (must use same tokenizer as main model)",
+    )
+    serve_parser.add_argument(
+        "--num-draft-tokens",
+        type=int,
+        default=4,
+        help="Number of tokens to generate speculatively per step (default: 4)",
     )
     # Reasoning parser options - choices loaded dynamically from registry
     from .reasoning import list_parsers

@@ -157,6 +157,7 @@ _reasoning_parser = None  # ReasoningParser instance when enabled
 _enable_auto_tool_choice: bool = False
 _tool_call_parser: str | None = None  # Parser name: auto, mistral, qwen, llama, hermes
 _tool_parser_instance = None  # Instantiated parser
+_enable_tool_logits_bias: bool = False  # Jump-forward decoding for tool calls
 
 
 def _load_prefix_cache_from_disk() -> None:
@@ -515,6 +516,37 @@ def load_model(
     _engine.preserve_native_tool_format = _detect_native_tool_support()
     if _engine.preserve_native_tool_format:
         logger.info(f"Native tool format enabled for parser: {_tool_call_parser}")
+
+    # Set up tool logits bias processor factory (jump-forward decoding)
+    if _enable_tool_logits_bias and _enable_auto_tool_choice and _tool_call_parser:
+        try:
+            from .api.tool_logits import create_tool_logits_processor
+
+            tokenizer = None
+            if hasattr(_engine, "_tokenizer"):
+                tokenizer = _engine._tokenizer
+            elif hasattr(_engine, "tokenizer"):
+                tokenizer = _engine.tokenizer
+            if tokenizer is not None:
+                # Create factory that produces fresh processors per request
+                def _make_factory(parser_name, tok):
+                    def factory():
+                        return create_tool_logits_processor(parser_name, tok)
+                    return factory
+
+                factory = _make_factory(_tool_call_parser, tokenizer)
+                # Set on BatchedEngine for use during scheduler init
+                if hasattr(_engine, "_tool_logits_processor_factory"):
+                    _engine._tool_logits_processor_factory = factory
+                logger.info(
+                    f"Tool logits bias enabled for parser: {_tool_call_parser}"
+                )
+            else:
+                logger.warning(
+                    "Tool logits bias requested but tokenizer not available"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to set up tool logits bias: {e}")
 
     logger.info(f"Default max tokens: {_default_max_tokens}")
 
@@ -1934,16 +1966,99 @@ async def stream_chat_completion(
                 # Skip this chunk (e.g., <think> token itself)
                 continue
 
+            content = delta_msg.content
+            reasoning = delta_msg.reasoning
+
+            # Some models (e.g. MiniMax) wrap tool calls in <think>
+            # blocks, so reasoning parser captures tool call XML as
+            # reasoning while content stays None.  Redirect reasoning
+            # to the content stream so the tool parser can handle it.
+            if tool_parser and reasoning and not content:
+                _check = tool_accumulated_text + reasoning
+                if (
+                    "<minimax:tool_call>" in _check
+                    or "<tool_call>" in _check
+                    or '<invoke name="' in _check
+                ):
+                    content = reasoning
+                    reasoning = None
+
+            # Tool call parsing on content portion
+            if tool_parser and content:
+                if not tool_markup_possible and "<" not in content:
+                    tool_accumulated_text += content
+                    # Suppress whitespace-only content when tools are active;
+                    # avoids emitting stray newlines before tool call XML.
+                    if not content.strip():
+                        continue
+                else:
+                    if not tool_markup_possible:
+                        tool_markup_possible = True
+                    tool_previous = tool_accumulated_text
+                    tool_accumulated_text += content
+                    tool_result = tool_parser.extract_tool_calls_streaming(
+                        tool_previous, tool_accumulated_text, content
+                    )
+
+                    if tool_result is None:
+                        # Inside tool markup - suppress content output
+                        if reasoning:
+                            # Still emit reasoning while buffering tool call
+                            chunk = ChatCompletionChunk(
+                                id=response_id,
+                                model=request.model,
+                                choices=[
+                                    ChatCompletionChunkChoice(
+                                        delta=ChatCompletionChunkDelta(
+                                            reasoning=reasoning,
+                                        ),
+                                        finish_reason=None,
+                                    )
+                                ],
+                                usage=None,
+                            )
+                            yield f"data: {chunk.model_dump_json()}\n\n"
+                        continue
+
+                    if "tool_calls" in tool_result:
+                        # Emit structured tool calls
+                        tool_calls_detected = True
+                        chunk = ChatCompletionChunk(
+                            id=response_id,
+                            model=request.model,
+                            choices=[
+                                ChatCompletionChunkChoice(
+                                    delta=ChatCompletionChunkDelta(
+                                        tool_calls=tool_result["tool_calls"],
+                                        reasoning=reasoning,
+                                    ),
+                                    finish_reason=(
+                                        "tool_calls" if output.finished else None
+                                    ),
+                                )
+                            ],
+                            usage=get_usage(output) if output.finished else None,
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+                        continue
+
+                    # Normal content from tool parser
+                    content = tool_result.get("content", "")
+
             chunk = ChatCompletionChunk(
                 id=response_id,
                 model=request.model,
                 choices=[
                     ChatCompletionChunkChoice(
                         delta=ChatCompletionChunkDelta(
-                            content=delta_msg.content,
-                            reasoning=delta_msg.reasoning,
+                            content=content if content else None,
+                            reasoning=reasoning,
                         ),
-                        finish_reason=output.finish_reason if output.finished else None,
+                        finish_reason=(
+                            "tool_calls"
+                            if (output.finished and tool_calls_detected)
+                            else (output.finish_reason if output.finished else None)
+                        ),
                     )
                 ],
                 usage=get_usage(output) if output.finished else None,
@@ -2025,6 +2140,26 @@ async def stream_chat_completion(
                 usage=get_usage(output) if output.finished else None,
             )
             yield f"data: {chunk.model_dump_json()}\n\n"
+
+    # Finalize reasoning parser: emit correction if short no-tag output
+    # was misclassified as reasoning during streaming.
+    if _reasoning_parser and accumulated_text:
+        correction = _reasoning_parser.finalize_streaming(accumulated_text)
+        if correction and correction.content:
+            correction_chunk = ChatCompletionChunk(
+                id=response_id,
+                model=request.model,
+                choices=[
+                    ChatCompletionChunkChoice(
+                        delta=ChatCompletionChunkDelta(
+                            content=correction.content,
+                        ),
+                        finish_reason=None,
+                    )
+                ],
+                usage=None,
+            )
+            yield f"data: {correction_chunk.model_dump_json()}\n\n"
 
     # Fallback: if tool parser accumulated text but never emitted tool_calls
     # (e.g., </tool_call> never arrived - incomplete tool call)
