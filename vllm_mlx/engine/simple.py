@@ -278,9 +278,10 @@ class SimpleEngine(BaseEngine):
                     temperature=temperature,
                     **kwargs,
                 )
-                text = clean_output_text(output.text)
+                # Return raw text — server.py runs clean_output_text()
+                # AFTER tool/reasoning parsers have processed channel tokens.
                 return GenerationOutput(
-                    text=text,
+                    text=output.text,
                     prompt_tokens=output.prompt_tokens,
                     completion_tokens=output.completion_tokens,
                     finish_reason=output.finish_reason,
@@ -297,9 +298,10 @@ class SimpleEngine(BaseEngine):
                     tools=template_tools,
                     **kwargs,
                 )
-                text = clean_output_text(output.text)
+                # Return raw text — server.py runs clean_output_text()
+                # AFTER tool/reasoning parsers have processed channel tokens.
                 return GenerationOutput(
-                    text=text,
+                    text=output.text,
                     tokens=output.tokens,
                     completion_tokens=len(output.tokens),
                     finish_reason=output.finish_reason,
