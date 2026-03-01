@@ -2,18 +2,19 @@
 """
 Harmony tool call parser for GPT-OSS models.
 
-Harmony uses control tokens and channels for tool calling:
+Harmony uses control tokens and channels for tool calling.  The chat
+template renders tool calls as:
 
-    <|channel|>commentary to=functions.get_weather
-    <|constrain|>json
-    <|message|>{"location": "San Francisco"}
-    <|call|>
+    <|start|>assistant to=functions.get_weather<|channel|>commentary json<|message|>
+    {"location": "San Francisco"}<|call|>
 
 The final response is in the 'final' channel:
 
-    <|channel|>final
-    <|message|>The weather is 72F.
-    <|return|>
+    <|channel|>final<|message|>The weather is 72F.<|return|>
+
+Note: <|call|> and <|return|> are EOS tokens and may not appear in the
+decoded model output.  The regexes below accept end-of-string as a
+fallback so parsing still works when the terminator is stripped.
 """
 
 import json
@@ -34,17 +35,18 @@ def _generate_tool_id() -> str:
     return f"call_{uuid.uuid4().hex[:8]}"
 
 
-# Pattern: <|channel|>commentary to=functions.tool_name ... <|call|>
+# The model generates: <|channel|>commentary to=functions.NAME <|constrain|>json<|message|>ARGS
+# <|call|> is an EOS token (200012) and may be absent from decoded text.
 _COMMENTARY_BLOCK_PATTERN = re.compile(
     r"<\|channel\|>commentary\s+to=functions\.(\w+)"
     r"(?:\s*<\|constrain\|>\w+)?"
-    r"\s*<\|message\|>(.*?)<\|call\|>",
+    r"\s*<\|message\|>(.*?)(?:<\|call\|>|$)",
     re.DOTALL,
 )
 
-# Pattern: <|channel|>final ... <|return|>
+# <|return|> is an EOS token and may be absent from decoded text.
 _FINAL_BLOCK_PATTERN = re.compile(
-    r"<\|channel\|>final\s*<\|message\|>(.*?)<\|return\|>",
+    r"<\|channel\|>final\s*(?:<\|constrain\|>[^<]*)?\s*<\|message\|>(.*?)(?:<\|return\|>|$)",
     re.DOTALL,
 )
 
@@ -162,20 +164,19 @@ class HarmonyToolParser(ToolParser):
                 }
 
         # If we're in the final channel, emit content
-        if "<|channel|>final" in current_text and "<|call|>" not in current_text:
+        if "<|channel|>final" in current_text and "to=functions." not in current_text:
             # Only emit content after <|message|> in the final channel
             if "<|message|>" in current_text:
                 final_start = current_text.rfind("<|channel|>final")
                 msg_start = current_text.find("<|message|>", final_start)
                 if msg_start >= 0:
                     msg_content = current_text[msg_start + len("<|message|>") :]
-                    # Strip trailing control tokens
                     msg_content = msg_content.replace("<|return|>", "").strip()
                     if msg_content and not _is_control_token(delta_text):
                         return {"content": delta_text}
 
-        # If no tool markers at all, pass through as content
-        if "<|channel|>" not in current_text:
+        # If no channel markers at all, pass through as content
+        if "<|channel|>" not in current_text and "to=functions." not in current_text:
             return {"content": delta_text}
 
         # Building tool call or in analysis channel, suppress output

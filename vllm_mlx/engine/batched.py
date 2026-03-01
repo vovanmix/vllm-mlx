@@ -453,6 +453,10 @@ class BatchedEngine(BaseEngine):
         if not self._loaded:
             await self.start()
 
+        # Internal flag: when called from chat(), skip cleaning so that
+        # tool/reasoning parsers in server.py see raw channel tokens.
+        skip_clean = kwargs.pop("_skip_clean", False)
+
         if self._is_mllm and self._mllm_scheduler:
             # Use MLLM scheduler for all requests when model is multimodal.
             # MLLM models only initialise the _mllm_scheduler (not _engine),
@@ -466,8 +470,9 @@ class BatchedEngine(BaseEngine):
                 top_p=top_p,
             )
 
+            raw = output.output_text
             return GenerationOutput(
-                text=clean_output_text(output.output_text),
+                text=raw if skip_clean else clean_output_text(raw),
                 prompt_tokens=output.prompt_tokens,
                 completion_tokens=output.completion_tokens,
                 finish_reason=output.finish_reason,
@@ -488,10 +493,9 @@ class BatchedEngine(BaseEngine):
             sampling_params=sampling_params,
         )
 
-        text = clean_output_text(output.output_text)
-
+        raw = output.output_text
         return GenerationOutput(
-            text=text,
+            text=raw if skip_clean else clean_output_text(raw),
             prompt_tokens=output.prompt_tokens,
             completion_tokens=output.completion_tokens,
             finish_reason=output.finish_reason,
@@ -527,6 +531,8 @@ class BatchedEngine(BaseEngine):
         if not self._loaded:
             await self.start()
 
+        skip_clean = kwargs.pop("_skip_clean", False)
+
         if self._is_mllm and self._mllm_scheduler:
             # Use MLLM scheduler for all streaming when model is multimodal
             request_id = await self._mllm_scheduler.add_request_async(
@@ -539,8 +545,9 @@ class BatchedEngine(BaseEngine):
             )
 
             async for output in self._mllm_scheduler.stream_outputs(request_id):
+                raw = output.output_text
                 yield GenerationOutput(
-                    text=clean_output_text(output.output_text),
+                    text=raw if skip_clean else clean_output_text(raw),
                     new_text=output.new_text,
                     prompt_tokens=output.prompt_tokens,
                     completion_tokens=output.completion_tokens,
@@ -567,10 +574,9 @@ class BatchedEngine(BaseEngine):
         )
 
         async for output in self._engine.stream_outputs(request_id):
-            text = clean_output_text(output.output_text)
-
+            raw = output.output_text
             yield GenerationOutput(
-                text=text,
+                text=raw if skip_clean else clean_output_text(raw),
                 new_text=output.new_text,
                 prompt_tokens=output.prompt_tokens,
                 completion_tokens=output.completion_tokens,
@@ -635,6 +641,7 @@ class BatchedEngine(BaseEngine):
             top_p=top_p,
             images=all_images if all_images else None,
             videos=all_videos if all_videos else None,
+            _skip_clean=True,
             **kwargs,
         )
 
@@ -751,6 +758,7 @@ class BatchedEngine(BaseEngine):
             top_p=top_p,
             images=all_images if all_images else None,
             videos=all_videos if all_videos else None,
+            _skip_clean=True,
             **kwargs,
         ):
             yield output
