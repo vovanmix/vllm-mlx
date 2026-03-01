@@ -395,6 +395,10 @@ def _parse_tool_calls_with_parser(
             ]
             return result.content or "", tool_calls
         else:
+            # If the parser extracted clean content (e.g. harmony's final
+            # channel), use it directly instead of re-parsing raw text.
+            if result.content is not None:
+                return result.content, None
             # Fallback: specific parser didn't find tool calls,
             # try generic parser which handles more formats (e.g. Nemotron XML)
             return parse_tool_calls(output_text, request_dict)
@@ -1393,13 +1397,14 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     # Parse tool calls from output using configured parser
     cleaned_text, tool_calls = _parse_tool_calls_with_parser(output.text, request)
 
-    # Extract reasoning content FIRST (strips channel tokens before JSON extraction)
+    # Extract reasoning from raw model output (needs channel tokens intact).
     reasoning_text = None
-    if _reasoning_parser and not tool_calls:
-        text_to_parse = cleaned_text or output.text
-        reasoning_text, cleaned_text = _reasoning_parser.extract_reasoning(
-            text_to_parse
+    if _reasoning_parser:
+        reasoning_text, parsed_content = _reasoning_parser.extract_reasoning(
+            output.text
         )
+        if parsed_content is not None and not tool_calls:
+            cleaned_text = parsed_content
 
     # Process response_format if specified (after reasoning parser cleaned the text)
     if response_format and not tool_calls:
@@ -1931,7 +1936,12 @@ async def stream_chat_completion(
             )
 
             if delta_msg is None:
-                # Skip this chunk (e.g., <think> token itself)
+                # Reasoning parser suppressed this token (e.g., control
+                # token or harmony commentary channel).  Still accumulate
+                # raw text for the tool parser so the streaming fallback
+                # can detect tool calls at end-of-stream.
+                if tool_parser:
+                    tool_accumulated_text += delta_text
                 continue
 
             content = delta_msg.content
@@ -2110,12 +2120,16 @@ async def stream_chat_completion(
             yield f"data: {chunk.model_dump_json()}\n\n"
 
     # Fallback: if tool parser accumulated text but never emitted tool_calls
-    # (e.g., </tool_call> never arrived - incomplete tool call)
+    # (e.g., </tool_call> or <|call|> EOS never arrived in decoded text)
+    _has_tool_markup = (
+        "<tool_call>" in tool_accumulated_text
+        or "to=functions." in tool_accumulated_text
+    )
     if (
         tool_parser
         and tool_accumulated_text
         and not tool_calls_detected
-        and "<tool_call>" in tool_accumulated_text
+        and _has_tool_markup
     ):
         result = tool_parser.extract_tool_calls(tool_accumulated_text)
         if result.tools_called:

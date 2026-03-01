@@ -632,12 +632,19 @@ class TestHarmonyToolDefinitionConverter:
 class TestHarmonyEdgeCases:
     """Edge case tests for Harmony parsers."""
 
-    def test_tool_parser_incomplete_call(self):
-        """Incomplete tool call (missing <|call|>) is not parsed."""
+    def test_tool_parser_incomplete_call_parsed_at_eos(self):
+        """Tool call without <|call|> IS parsed via end-of-string fallback.
+
+        <|call|> is an EOS token (200012) that mlx-lm strips from decoded
+        text.  The regex accepts $ so tool calls are still extracted.
+        """
         parser = HarmonyToolParser()
         text = "<|channel|>commentary to=functions.func\n" '<|message|>{"arg": "value"}'
         result = parser.extract_tool_calls(text)
-        assert not result.tools_called
+        assert result.tools_called
+        assert result.tool_calls[0]["name"] == "func"
+        args = json.loads(result.tool_calls[0]["arguments"])
+        assert args["arg"] == "value"
 
     def test_tool_parser_unicode_content(self):
         """Handle unicode in tool arguments."""
@@ -732,3 +739,229 @@ class TestHarmonyEdgeCases:
         assert result.tools_called
         args = json.loads(result.tool_calls[0]["arguments"])
         assert args["key"] == "value"
+
+
+# ============================================================================
+# EOS Token Tolerance Tests (mlx-lm strips EOS tokens from decoded text)
+# ============================================================================
+
+
+class TestHarmonyEOSTokenTolerance:
+    """Tests that parsers work when EOS tokens are absent from decoded text.
+
+    mlx-lm's stream_generate stops BEFORE adding EOS tokens to the
+    detokenizer, so <|call|> (200012) and <|return|> (200002) never
+    appear in output.text.  These tests verify the $ fallback in regexes.
+    """
+
+    def test_tool_call_without_call_eos(self):
+        """Tool call with <|call|> stripped (end-of-string fallback)."""
+        parser = HarmonyToolParser()
+        text = (
+            "<|channel|>commentary to=functions.read_file\n"
+            "<|constrain|>json\n"
+            '<|message|>{"file_path": "/etc/hosts"}'
+        )
+        result = parser.extract_tool_calls(text)
+
+        assert result.tools_called
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0]["name"] == "read_file"
+        args = json.loads(result.tool_calls[0]["arguments"])
+        assert args["file_path"] == "/etc/hosts"
+
+    def test_tool_call_with_call_eos_still_works(self):
+        """Tool call with <|call|> present still works."""
+        parser = HarmonyToolParser()
+        text = (
+            "<|channel|>commentary to=functions.read_file\n"
+            "<|constrain|>json\n"
+            '<|message|>{"file_path": "/etc/hosts"}\n'
+            "<|call|>"
+        )
+        result = parser.extract_tool_calls(text)
+
+        assert result.tools_called
+        assert result.tool_calls[0]["name"] == "read_file"
+
+    def test_final_channel_without_return_eos(self):
+        """Final channel with <|return|> stripped (end-of-string fallback)."""
+        parser = HarmonyToolParser()
+        text = "<|channel|>final\n<|message|>The answer is 42."
+        result = parser.extract_tool_calls(text)
+
+        assert not result.tools_called
+        assert result.content == "The answer is 42."
+
+    def test_final_channel_with_return_eos_still_works(self):
+        """Final channel with <|return|> present still works."""
+        parser = HarmonyToolParser()
+        text = "<|channel|>final\n<|message|>The answer is 42.\n<|return|>"
+        result = parser.extract_tool_calls(text)
+
+        assert not result.tools_called
+        assert result.content == "The answer is 42."
+
+    def test_final_channel_with_constrain_without_return(self):
+        """Final channel with <|constrain|> and no <|return|>."""
+        parser = HarmonyToolParser()
+        text = '<|channel|>final <|constrain|>JSON<|message|>{"result": "ok"}'
+        result = parser.extract_tool_calls(text)
+
+        assert not result.tools_called
+        assert result.content == '{"result": "ok"}'
+
+    def test_tool_plus_final_without_eos_tokens(self):
+        """Tool call + final channel, both missing EOS tokens."""
+        parser = HarmonyToolParser()
+        text = (
+            "<|channel|>commentary to=functions.search\n"
+            "<|constrain|>json\n"
+            '<|message|>{"q": "test"}\n'
+            "<|call|>\n"
+            "<|channel|>final\n"
+            "<|message|>Here are results."
+        )
+        result = parser.extract_tool_calls(text)
+
+        assert result.tools_called
+        assert result.tool_calls[0]["name"] == "search"
+        assert result.content == "Here are results."
+
+    def test_multiple_tool_calls_last_without_eos(self):
+        """Multiple tool calls, last one missing <|call|>."""
+        parser = HarmonyToolParser()
+        text = (
+            "<|channel|>commentary to=functions.func_a\n"
+            "<|constrain|>json\n"
+            "<|message|>{}\n"
+            "<|call|>\n"
+            "<|channel|>commentary to=functions.func_b\n"
+            "<|constrain|>json\n"
+            '<|message|>{"key": "val"}'
+        )
+        result = parser.extract_tool_calls(text)
+
+        assert result.tools_called
+        assert len(result.tool_calls) == 2
+        assert result.tool_calls[0]["name"] == "func_a"
+        assert result.tool_calls[1]["name"] == "func_b"
+
+    def test_reasoning_analysis_without_end_eos(self):
+        """Analysis channel without <|end|> (terminated by <|channel|>)."""
+        parser = HarmonyReasoningParser()
+        output = (
+            "<|channel|>analysis<|message|>Thinking about this problem"
+            "<|channel|>final<|message|>The answer is 42."
+        )
+        reasoning, content = parser.extract_reasoning(output)
+
+        assert reasoning == "Thinking about this problem"
+        assert content == "The answer is 42."
+
+    def test_reasoning_analysis_without_end_at_string_end(self):
+        """Analysis channel without <|end|>, at end of string."""
+        parser = HarmonyReasoningParser()
+        output = "<|channel|>analysis<|message|>Just thinking about it"
+        reasoning, content = parser.extract_reasoning(output)
+
+        assert reasoning == "Just thinking about it"
+        assert content is None
+
+    def test_reasoning_final_without_return_eos(self):
+        """Final channel without <|return|> (end-of-string fallback)."""
+        parser = HarmonyReasoningParser()
+        output = (
+            "<|channel|>analysis<|message|>Let me think<|end|>"
+            "<|channel|>final<|message|>Result: 42"
+        )
+        reasoning, content = parser.extract_reasoning(output)
+
+        assert reasoning == "Let me think"
+        assert content == "Result: 42"
+
+    def test_reasoning_with_constrain_without_return(self):
+        """Final channel with <|constrain|> and no <|return|>."""
+        parser = HarmonyReasoningParser()
+        output = (
+            "<|channel|>analysis<|message|>Need JSON output<|end|>"
+            '<|channel|>final <|constrain|>JSON<|message|>{"answer": 42}'
+        )
+        reasoning, content = parser.extract_reasoning(output)
+
+        assert reasoning == "Need JSON output"
+        assert content == '{"answer": 42}'
+
+    def test_reasoning_analysis_terminated_by_start_token(self):
+        """Analysis channel terminated by <|start|> (lookahead)."""
+        parser = HarmonyReasoningParser()
+        output = (
+            "<|channel|>analysis<|message|>Thinking"
+            "<|start|>assistant<|channel|>final<|message|>Answer"
+        )
+        reasoning, content = parser.extract_reasoning(output)
+
+        assert reasoning == "Thinking"
+        assert content == "Answer"
+
+    def test_full_realistic_gpt_oss_output_no_eos(self):
+        """Realistic GPT-OSS output with all EOS tokens stripped."""
+        tool_parser = HarmonyToolParser()
+        reasoning_parser = HarmonyReasoningParser()
+
+        text = (
+            "<|channel|>analysis<|message|>The user wants to read /etc/hosts. "
+            "I should use the read_file_from_disk function."
+            "<|start|>assistant"
+            "<|channel|>commentary to=functions.read_file_from_disk"
+            "<|constrain|>json"
+            '<|message|>{"file_path": "/etc/hosts"}'
+        )
+
+        # Tool parser should find the tool call
+        tool_result = tool_parser.extract_tool_calls(text)
+        assert tool_result.tools_called
+        assert tool_result.tool_calls[0]["name"] == "read_file_from_disk"
+        args = json.loads(tool_result.tool_calls[0]["arguments"])
+        assert args["file_path"] == "/etc/hosts"
+
+        # Reasoning parser should find the analysis
+        reasoning, content = reasoning_parser.extract_reasoning(text)
+        assert "read_file_from_disk" in reasoning
+        assert content is None
+
+
+# ============================================================================
+# Streaming Tool Detection Fix Tests
+# ============================================================================
+
+
+class TestHarmonyStreamingToolDetection:
+    """Tests for streaming fixes: to=functions. detection instead of <|call|>."""
+
+    def test_streaming_final_with_tool_call_not_misclassified(self):
+        """Final channel present but to=functions. also present: suppress, don't emit."""
+        parser = HarmonyToolParser()
+        text = (
+            "<|channel|>commentary to=functions.func\n"
+            "<|constrain|>json\n"
+            '<|message|>{"a": 1}\n'
+            "<|call|>\n"
+            "<|channel|>final\n"
+            "<|message|>Result"
+        )
+        result = parser.extract_tool_calls_streaming("", text, "Result")
+        assert result is None or (result is not None and "tool_calls" not in result)
+
+    def test_streaming_no_channels_with_functions_marker_suppressed(self):
+        """Text with to=functions. but no <|channel|> should not pass through."""
+        parser = HarmonyToolParser()
+        current = "to=functions.read_file"
+        result = parser.extract_tool_calls_streaming("", current, current)
+        assert result is None
+
+    def test_streaming_plain_text_still_passes_through(self):
+        """Plain text without any markers still passes through as content."""
+        parser = HarmonyToolParser()
+        result = parser.extract_tool_calls_streaming("", "Hello world", "Hello world")
+        assert result == {"content": "Hello world"}

@@ -4,15 +4,14 @@ Reasoning parser for GPT-OSS models using Harmony format.
 
 Harmony uses channels for reasoning vs final content:
 
-    <|channel|>analysis
-    <|message|>Let me think about this...
-    <|end|>
-    <|channel|>final
-    <|message|>The answer is 42.
-    <|return|>
+    <|channel|>analysis<|message|>Let me think about this...<|end|>
+    <|channel|>final<|message|>The answer is 42.<|return|>
 
 The analysis channel contains reasoning, and the final channel
 contains the user-facing response.
+
+Note: <|return|> is an EOS token (200002) and may not appear in the
+decoded model output.  The regexes accept end-of-string as a fallback.
 """
 
 import re
@@ -21,13 +20,14 @@ from .base import DeltaMessage, ReasoningParser
 
 # Analysis channel blocks: <|channel|>analysis<|message|>...<|end|>
 _ANALYSIS_PATTERN = re.compile(
-    r"<\|channel\|>analysis\s*<\|message\|>(.*?)<\|end\|>",
+    r"<\|channel\|>analysis\s*<\|message\|>(.*?)(?:<\|end\|>|(?=<\|channel\|>)|(?=<\|start\|>)|$)",
     re.DOTALL,
 )
 
 # Final channel content: <|channel|>final<|message|>...<|return|>
+# <|return|> is EOS and may be absent from decoded text.
 _FINAL_PATTERN = re.compile(
-    r"<\|channel\|>final\s*<\|message\|>(.*?)<\|return\|>",
+    r"<\|channel\|>final\s*(?:<\|constrain\|>[^<]*)?\s*<\|message\|>(.*?)(?:<\|return\|>|$)",
     re.DOTALL,
 )
 

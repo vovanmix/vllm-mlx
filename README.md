@@ -362,6 +362,71 @@ GEMMA3_SLIDING_WINDOW=0 vllm-mlx serve mlx-community/gemma-3-27b-it-4bit --port 
 | `GEMMA3_SLIDING_WINDOW=8192` | ~40K tokens | ~25GB |
 | `GEMMA3_SLIDING_WINDOW=0` | ~50K tokens | ~35GB |
 
+## Development Setup
+
+### Prerequisites
+
+- macOS on Apple Silicon (M1/M2/M3/M4)
+- Python 3.12 (install via `brew install python@3.12` if needed)
+- Git
+
+### Clone and Install
+
+```bash
+git clone https://github.com/vovanmix/vllm-mlx.git
+cd vllm-mlx
+
+# Create a virtual environment with Python 3.12
+python3.12 -m venv venv
+source venv/bin/activate
+
+# Install in editable mode with dev dependencies
+pip install -e ".[dev]"
+```
+
+### Running Tests
+
+```bash
+# Run the full test suite
+python -m pytest tests/ -v
+
+# Run a specific test file
+python -m pytest tests/test_harmony_parsers.py -v
+
+# Run tests matching a keyword
+python -m pytest tests/ -k "harmony" -v
+
+# Skip slow/integration tests (skipped by default)
+# To include them:
+python -m pytest tests/ --run-slow
+```
+
+### Code Quality
+
+```bash
+# Format code
+black vllm_mlx/ tests/
+
+# Lint
+ruff check vllm_mlx/ tests/
+
+# Type check
+mypy vllm_mlx/
+```
+
+### Project Structure
+
+```
+vllm_mlx/
+├── api/            # API models and utilities
+├── engine/         # SimpleEngine and BatchedEngine
+├── reasoning/      # Reasoning parsers (Qwen3, DeepSeek-R1, Harmony)
+├── tool_parsers/   # Tool call parsers (Mistral, Qwen, Llama, Harmony, etc.)
+├── server.py       # FastAPI server (OpenAI + Anthropic compatible)
+└── cli.py          # CLI entry point
+tests/              # Test suite (pytest)
+```
+
 ## Contributing
 
 We welcome contributions! See [Contributing Guide](docs/development/contributing.md) for details.

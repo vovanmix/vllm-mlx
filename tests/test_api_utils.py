@@ -592,3 +592,29 @@ class TestGptOssSpecialTokens:
         text = "<|channel|>analysis<|message|>Just thinking <|constrain|>something"
         result = clean_output_text(text)
         assert "<|constrain|>" not in result
+
+    def test_clean_output_strips_end_token_in_fallback(self):
+        """<|end|> must be stripped in the no-final-channel fallback path."""
+        text = "<|channel|>analysis<|message|>Thinking<|end|>"
+        result = clean_output_text(text)
+        assert "<|end|>" not in result
+        assert "Thinking" in result
+
+    def test_clean_output_strips_end_token_between_channels(self):
+        """<|end|> between analysis and commentary must not leak."""
+        text = (
+            "<|channel|>analysis<|message|>Reasoning here<|end|>"
+            "<|channel|>commentary to=functions.func<|message|>{}"
+        )
+        result = clean_output_text(text)
+        assert "<|end|>" not in result
+
+    def test_clean_output_end_token_with_final_channel(self):
+        """<|end|> before final channel should be handled."""
+        text = (
+            "<|channel|>analysis<|message|>Thinking<|end|>"
+            "<|channel|>final<|message|>The answer<|return|>"
+        )
+        result = clean_output_text(text)
+        assert result == "The answer"
+        assert "<|end|>" not in result

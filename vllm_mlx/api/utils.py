@@ -60,7 +60,7 @@ def _clean_gpt_oss_output(text: str) -> str:
 
     # No final channel — strip all channel/structural tokens (including constrain)
     cleaned = re.sub(
-        r"<\|channel\|>[^<]*(?:<\|constrain\|>[^<]*)?<\|message\|>|<\|start\|>[^<]*|<\|return\|>|<\|call\|>|<\|constrain\|>[^<]*",
+        r"<\|channel\|>[^<]*(?:<\|constrain\|>[^<]*)?<\|message\|>|<\|start\|>[^<]*|<\|end\|>|<\|return\|>|<\|call\|>|<\|constrain\|>[^<]*",
         "",
         text,
     )
