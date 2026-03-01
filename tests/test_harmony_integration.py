@@ -55,9 +55,7 @@ class TestParserContentPreservation:
                 "<|channel|>final<|message|>The answer is 42."
             )
 
-            cleaned, tool_calls = server._parse_tool_calls_with_parser(
-                raw_text, None
-            )
+            cleaned, tool_calls = server._parse_tool_calls_with_parser(raw_text, None)
 
             assert tool_calls is None
             assert cleaned == "The answer is 42."
@@ -85,9 +83,7 @@ class TestParserContentPreservation:
                 '<|message|>{"path": "/etc/hosts"}'
             )
 
-            cleaned, tool_calls = server._parse_tool_calls_with_parser(
-                raw_text, None
-            )
+            cleaned, tool_calls = server._parse_tool_calls_with_parser(raw_text, None)
 
             assert tool_calls is not None
             assert len(tool_calls) == 1
@@ -114,9 +110,7 @@ class TestParserContentPreservation:
 
             raw_text = "Just plain text with no channel markers."
 
-            cleaned, tool_calls = server._parse_tool_calls_with_parser(
-                raw_text, None
-            )
+            cleaned, tool_calls = server._parse_tool_calls_with_parser(raw_text, None)
 
             assert "Just plain text" in cleaned
         finally:
@@ -329,9 +323,7 @@ class TestStreamingToolAccumulation:
         for token in tokens:
             prev = accumulated
             accumulated += token
-            delta_msg = parser.extract_reasoning_streaming(
-                prev, accumulated, token
-            )
+            delta_msg = parser.extract_reasoning_streaming(prev, accumulated, token)
             if delta_msg is None:
                 tool_accumulated += token
 
@@ -360,9 +352,7 @@ class TestStreamingToolAccumulation:
         for token in tokens:
             prev = accumulated
             accumulated += token
-            delta_msg = parser.extract_reasoning_streaming(
-                prev, accumulated, token
-            )
+            delta_msg = parser.extract_reasoning_streaming(prev, accumulated, token)
             if delta_msg is None:
                 tool_accumulated += token
 
@@ -386,28 +376,19 @@ class TestStreamingFallbackToolMarkup:
             "<|constrain|>json\n"
             '<|message|>{"path": "/etc/hosts"}'
         )
-        has_markup = (
-            "<tool_call>" in accumulated
-            or "to=functions." in accumulated
-        )
+        has_markup = "<tool_call>" in accumulated or "to=functions." in accumulated
         assert has_markup is True
 
     def test_detect_xml_tool_markup(self):
         """<tool_call> in accumulated text still detected."""
         accumulated = '<tool_call>{"name": "func", "arguments": {}}</tool_call>'
-        has_markup = (
-            "<tool_call>" in accumulated
-            or "to=functions." in accumulated
-        )
+        has_markup = "<tool_call>" in accumulated or "to=functions." in accumulated
         assert has_markup is True
 
     def test_no_tool_markup_in_plain_text(self):
         """Plain text does not trigger false positive."""
         accumulated = "This is just a regular response."
-        has_markup = (
-            "<tool_call>" in accumulated
-            or "to=functions." in accumulated
-        )
+        has_markup = "<tool_call>" in accumulated or "to=functions." in accumulated
         assert has_markup is False
 
 

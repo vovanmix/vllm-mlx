@@ -805,9 +805,7 @@ class TestHarmonyEOSTokenTolerance:
     def test_final_channel_with_constrain_without_return(self):
         """Final channel with <|constrain|> and no <|return|>."""
         parser = HarmonyToolParser()
-        text = (
-            '<|channel|>final <|constrain|>JSON<|message|>{"result": "ok"}'
-        )
+        text = '<|channel|>final <|constrain|>JSON<|message|>{"result": "ok"}'
         result = parser.extract_tool_calls(text)
 
         assert not result.tools_called
@@ -953,9 +951,7 @@ class TestHarmonyStreamingToolDetection:
             "<|message|>Result"
         )
         result = parser.extract_tool_calls_streaming("", text, "Result")
-        assert result is None or (
-            result is not None and "tool_calls" not in result
-        )
+        assert result is None or (result is not None and "tool_calls" not in result)
 
     def test_streaming_no_channels_with_functions_marker_suppressed(self):
         """Text with to=functions. but no <|channel|> should not pass through."""
