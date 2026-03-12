@@ -146,7 +146,15 @@ class HarmonyToolParser(ToolParser):
             if active_block.startswith("<|channel|>final"):
                 if "<|message|>" in active_block:
                     cleaned = delta_text
-                    for t in ["<|start|>", "<|end|>", "<|message|>", "<|channel|>", "<|constrain|>", "<|return|>", "<|call|>"]:
+                    for t in [
+                        "<|start|>",
+                        "<|end|>",
+                        "<|message|>",
+                        "<|channel|>",
+                        "<|constrain|>",
+                        "<|return|>",
+                        "<|call|>",
+                    ]:
                         cleaned = cleaned.replace(t, "")
                     if cleaned:
                         return {"content": cleaned}
@@ -160,7 +168,15 @@ class HarmonyToolParser(ToolParser):
 
         # Clean control tokens and pass through
         cleaned = delta_text
-        for t in ["<|start|>", "<|end|>", "<|message|>", "<|channel|>", "<|constrain|>", "<|return|>", "<|call|>"]:
+        for t in [
+            "<|start|>",
+            "<|end|>",
+            "<|message|>",
+            "<|channel|>",
+            "<|constrain|>",
+            "<|return|>",
+            "<|call|>",
+        ]:
             cleaned = cleaned.replace(t, "")
 
         if cleaned:

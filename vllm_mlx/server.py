@@ -1569,7 +1569,9 @@ async def create_anthropic_message(
     # Extract reasoning from raw model output
     reasoning_text = None
     if _reasoning_parser:
-        reasoning_text, parsed_content = _reasoning_parser.extract_reasoning(output.text)
+        reasoning_text, parsed_content = _reasoning_parser.extract_reasoning(
+            output.text
+        )
         if parsed_content is not None and not tool_calls:
             cleaned_text = parsed_content
 
@@ -1782,7 +1784,9 @@ async def _stream_anthropic_messages(
                     yield f"event: content_block_delta\ndata: {json.dumps(delta_event)}\n\n"
 
     # Check for tool calls using the raw text so the parser can find the XML/tags
-    text_for_tools = raw_accumulated_text if _reasoning_parser else clean_accumulated_text
+    text_for_tools = (
+        raw_accumulated_text if _reasoning_parser else clean_accumulated_text
+    )
     _, tool_calls = _parse_tool_calls_with_parser(text_for_tools, openai_request)
 
     # Emit content_block_stop for text block
