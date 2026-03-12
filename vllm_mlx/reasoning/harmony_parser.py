@@ -97,56 +97,41 @@ class HarmonyReasoningParser(ReasoningParser):
         Returns:
             DeltaMessage with reasoning and/or content, or None.
         """
-        # Detect channel switches in the delta
-        if "<|channel|>" in delta_text:
-            if "analysis" in delta_text:
+        # 1. Robustly detect active channel from full context
+        if "<|channel|>" in current_text:
+            last_channel_idx = current_text.rfind("<|channel|>")
+            after_channel = current_text[last_channel_idx + len("<|channel|>") :]
+            if after_channel.startswith("analysis"):
                 self._current_channel = "analysis"
-                self._in_message = False
-                return None
-            elif "final" in delta_text:
+            elif after_channel.startswith("final"):
                 self._current_channel = "final"
-                self._in_message = False
-                return None
-            elif "commentary" in delta_text:
-                self._current_channel = "commentary"
-                self._in_message = False
-                return None
-
-        # Detect channel from full context if not yet determined
-        if self._current_channel is None and "<|channel|>" in current_text:
-            last_channel = current_text.rfind("<|channel|>")
-            after = current_text[last_channel + len("<|channel|>") :]
-            if after.startswith("analysis"):
-                self._current_channel = "analysis"
-            elif after.startswith("final"):
-                self._current_channel = "final"
-            elif after.startswith("commentary"):
+            elif after_channel.startswith("commentary"):
                 self._current_channel = "commentary"
 
-        # Handle message start
-        if "<|message|>" in delta_text:
-            self._in_message = True
-            # Don't emit the token itself
-            return None
+        # 2. Robustly detect if we are currently inside a message block
+        self._in_message = False
+        if self._current_channel:
+            last_channel_idx = current_text.rfind("<|channel|>")
+            msg_idx = current_text.find("<|message|>", last_channel_idx)
 
-        # Handle channel/message end tokens
-        if any(
-            token in delta_text
-            for token in ("<|end|>", "<|return|>", "<|call|>", "<|start|>")
-        ):
-            self._in_message = False
-            return None
+            if msg_idx != -1:
+                after_msg = current_text[msg_idx + len("<|message|>") :]
+                # If no terminator has appeared since <|message|> started, we are in the message
+                if not any(
+                    t in after_msg
+                    for t in ("<|end|>", "<|return|>", "<|call|>", "<|start|>")
+                ):
+                    self._in_message = True
 
-        # Skip control tokens
-        if delta_text.strip().startswith("<|") and delta_text.strip().endswith("|>"):
-            return None
+        # Clean any partial/full control tokens out of the delta
+        cleaned_delta = re.sub(r"<\|.*?\|>", "", delta_text)
 
         # Emit content based on current channel
-        if self._in_message and self._current_channel == "analysis":
-            return DeltaMessage(reasoning=delta_text)
-
-        if self._in_message and self._current_channel == "final":
-            return DeltaMessage(content=delta_text)
+        if self._in_message and cleaned_delta:
+            if self._current_channel == "analysis":
+                return DeltaMessage(reasoning=cleaned_delta)
+            elif self._current_channel == "final":
+                return DeltaMessage(content=cleaned_delta)
 
         # In commentary or unknown channel, suppress
         return None

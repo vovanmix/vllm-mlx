@@ -1566,6 +1566,15 @@ async def create_anthropic_message(
         output.text, openai_request
     )
 
+    # Extract reasoning from raw model output
+    reasoning_text = None
+    if _reasoning_parser:
+        reasoning_text, parsed_content = _reasoning_parser.extract_reasoning(
+            output.text
+        )
+        if parsed_content is not None and not tool_calls:
+            cleaned_text = parsed_content
+
     # Clean output text
     final_content = None
     if cleaned_text:
@@ -1729,8 +1738,12 @@ async def _stream_anthropic_messages(
     yield f"event: content_block_start\ndata: {json.dumps(content_block_start)}\n\n"
 
     # Stream content deltas
-    accumulated_text = ""
+    raw_accumulated_text = ""
+    clean_accumulated_text = ""
     completion_tokens = 0
+
+    if _reasoning_parser:
+        _reasoning_parser.reset_state()
 
     async for output in engine.stream_chat(messages=messages, **chat_kwargs):
         delta_text = output.new_text
@@ -1739,21 +1752,40 @@ async def _stream_anthropic_messages(
         if hasattr(output, "completion_tokens") and output.completion_tokens:
             completion_tokens = output.completion_tokens
 
-        if delta_text:
-            # Filter special tokens
-            content = SPECIAL_TOKENS_PATTERN.sub("", delta_text)
+        if _reasoning_parser and delta_text:
+            previous_text = raw_accumulated_text
+            raw_accumulated_text += delta_text
+            delta_msg = _reasoning_parser.extract_reasoning_streaming(
+                previous_text, raw_accumulated_text, delta_text
+            )
 
-            if content:
-                accumulated_text += content
+            # Claude Code only needs the final content. We ignore delta_msg.reasoning
+            if delta_msg is not None and delta_msg.content:
+                clean_accumulated_text += delta_msg.content
                 delta_event = {
                     "type": "content_block_delta",
                     "index": 0,
-                    "delta": {"type": "text_delta", "text": content},
+                    "delta": {"type": "text_delta", "text": delta_msg.content},
                 }
                 yield f"event: content_block_delta\ndata: {json.dumps(delta_event)}\n\n"
+        else:
+            if delta_text:
+                raw_accumulated_text += delta_text
+                # Filter special tokens
+                content = SPECIAL_TOKENS_PATTERN.sub("", delta_text)
 
-    # Check for tool calls in accumulated text
-    _, tool_calls = _parse_tool_calls_with_parser(accumulated_text, openai_request)
+                if content:
+                    clean_accumulated_text += content
+                    delta_event = {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": content},
+                    }
+                    yield f"event: content_block_delta\ndata: {json.dumps(delta_event)}\n\n"
+
+    # Check for tool calls using the raw text so the parser can find the XML/tags
+    # ALWAYS use raw_accumulated_text, regardless of reasoning_parser state
+    _, tool_calls = _parse_tool_calls_with_parser(raw_accumulated_text, openai_request)
 
     # Emit content_block_stop for text block
     yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
