@@ -2,19 +2,7 @@
 """
 Harmony tool call parser for GPT-OSS models.
 
-Harmony uses control tokens and channels for tool calling.  The chat
-template renders tool calls as:
-
-    <|start|>assistant to=functions.get_weather<|channel|>commentary json<|message|>
-    {"location": "San Francisco"}<|call|>
-
-The final response is in the 'final' channel:
-
-    <|channel|>final<|message|>The weather is 72F.<|return|>
-
-Note: <|call|> and <|return|> are EOS tokens and may not appear in the
-decoded model output.  The regexes below accept end-of-string as a
-fallback so parsing still works when the terminator is stripped.
+Harmony uses control tokens and channels for tool calling.
 """
 
 import json
@@ -35,18 +23,17 @@ def _generate_tool_id() -> str:
     return f"call_{uuid.uuid4().hex[:8]}"
 
 
-# The model generates: <|channel|>commentary to=functions.NAME <|constrain|>json<|message|>ARGS
+# The model generates: <|channel|>commentary to=functions.NAME json<|message|>ARGS
 # <|call|> is an EOS token (200012) and may be absent from decoded text.
+# We use a robust regex that handles variable token order and missing EOS tokens.
 _COMMENTARY_BLOCK_PATTERN = re.compile(
-    r"<\|channel\|>commentary\s+to=functions\.(\w+)"
-    r"(?:\s*<\|constrain\|>\w+)?"
-    r"\s*<\|message\|>(.*?)(?:<\|call\|>|$)",
+    r"to=functions\.(\w+).*?<\|message\|>(.*?)(?:<\|call\|>|<\|channel\|>|$)",
     re.DOTALL,
 )
 
 # <|return|> is an EOS token and may be absent from decoded text.
 _FINAL_BLOCK_PATTERN = re.compile(
-    r"<\|channel\|>final\s*(?:<\|constrain\|>[^<]*)?\s*<\|message\|>(.*?)(?:<\|return\|>|$)",
+    r"<\|channel\|>final.*?<\|message\|>(.*?)(?:<\|return\|>|<\|channel\|>|$)",
     re.DOTALL,
 )
 
@@ -55,13 +42,6 @@ _FINAL_BLOCK_PATTERN = re.compile(
 class HarmonyToolParser(ToolParser):
     """
     Tool call parser for GPT-OSS models using Harmony format.
-
-    Harmony uses control tokens and 3 channels:
-    - analysis: internal reasoning (handled by reasoning parser)
-    - commentary: tool calls addressed with to=functions.{name}
-    - final: user-facing response
-
-    Used when --enable-auto-tool-choice --tool-call-parser harmony are set.
     """
 
     SUPPORTS_NATIVE_TOOL_FORMAT = False
@@ -140,11 +120,7 @@ class HarmonyToolParser(ToolParser):
     ) -> dict[str, Any] | None:
         """
         Extract tool calls from streaming Harmony model output.
-
-        Waits for <|call|> to complete a tool call, and emits final
-        channel content as regular content deltas.
         """
-        # If we see a tool call completion marker in the delta
         if "<|call|>" in delta_text:
             result = self.extract_tool_calls(current_text)
             if result.tools_called:
@@ -163,23 +139,33 @@ class HarmonyToolParser(ToolParser):
                     ]
                 }
 
-        # If we're in the final channel, emit content
-        if "<|channel|>final" in current_text and "to=functions." not in current_text:
-            # Only emit content after <|message|> in the final channel
-            if "<|message|>" in current_text:
-                final_start = current_text.rfind("<|channel|>final")
-                msg_start = current_text.find("<|message|>", final_start)
-                if msg_start >= 0:
-                    msg_content = current_text[msg_start + len("<|message|>") :]
-                    msg_content = msg_content.replace("<|return|>", "").strip()
-                    if msg_content and not _is_control_token(delta_text):
-                        return {"content": delta_text}
+        # Find active channel by looking at last <|channel|>
+        last_channel_idx = current_text.rfind("<|channel|>")
+        if last_channel_idx >= 0:
+            active_block = current_text[last_channel_idx:]
+            if active_block.startswith("<|channel|>final"):
+                if "<|message|>" in active_block:
+                    cleaned = delta_text
+                    for t in ["<|start|>", "<|end|>", "<|message|>", "<|channel|>", "<|constrain|>", "<|return|>", "<|call|>"]:
+                        cleaned = cleaned.replace(t, "")
+                    if cleaned:
+                        return {"content": cleaned}
+                return None  # Before message or control token
+            else:
+                return None  # Suppress commentary or analysis
 
-        # If no channel markers at all, pass through as content
-        if "<|channel|>" not in current_text and "to=functions." not in current_text:
-            return {"content": delta_text}
+        # No channel marker found yet. Suppress if tool start is detected
+        if "to=functions." in current_text:
+            return None
 
-        # Building tool call or in analysis channel, suppress output
+        # Clean control tokens and pass through
+        cleaned = delta_text
+        for t in ["<|start|>", "<|end|>", "<|message|>", "<|channel|>", "<|constrain|>", "<|return|>", "<|call|>"]:
+            cleaned = cleaned.replace(t, "")
+
+        if cleaned:
+            return {"content": cleaned}
+
         return None
 
 
@@ -202,16 +188,3 @@ def _strip_control_tokens(text: str) -> str:
     result = re.sub(r"to=functions\.\w+\s*", "", result)
     result = re.sub(r"json\s*", "", result)
     return result.strip()
-
-
-def _is_control_token(text: str) -> bool:
-    """Check if text is a Harmony control token."""
-    return text.strip() in {
-        "<|start|>",
-        "<|end|>",
-        "<|message|>",
-        "<|channel|>",
-        "<|constrain|>",
-        "<|return|>",
-        "<|call|>",
-    }
