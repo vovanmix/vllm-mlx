@@ -1770,11 +1770,11 @@ async def _stream_anthropic_messages(
                 yield f"event: content_block_delta\ndata: {json.dumps(delta_event)}\n\n"
         else:
             if delta_text:
+                raw_accumulated_text += delta_text
                 # Filter special tokens
                 content = SPECIAL_TOKENS_PATTERN.sub("", delta_text)
 
                 if content:
-                    raw_accumulated_text += delta_text
                     clean_accumulated_text += content
                     delta_event = {
                         "type": "content_block_delta",
@@ -1784,10 +1784,8 @@ async def _stream_anthropic_messages(
                     yield f"event: content_block_delta\ndata: {json.dumps(delta_event)}\n\n"
 
     # Check for tool calls using the raw text so the parser can find the XML/tags
-    text_for_tools = (
-        raw_accumulated_text if _reasoning_parser else clean_accumulated_text
-    )
-    _, tool_calls = _parse_tool_calls_with_parser(text_for_tools, openai_request)
+    # ALWAYS use raw_accumulated_text, regardless of reasoning_parser state
+    _, tool_calls = _parse_tool_calls_with_parser(raw_accumulated_text, openai_request)
 
     # Emit content_block_stop for text block
     yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
